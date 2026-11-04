@@ -1,0 +1,115 @@
+= @flovven/discovery
+
+Node.js 服务发现组件：注册、注销、查询、订阅，对标 bufgot/discovery 与 ferrite-discovery。
+
+`@flovven/discovery` 为 flovven 生态提供统一的服务发现抽象。业务侧只面向
+`ServiceDiscovery` 接口编程，底层可在 Nacos / Eureka / etcd 之间切换，
+与 `@flovven/web-client` 的负载均衡、服务发现模式直接对接。
+
+== 特性
+
+* 统一接口：`register` / `deregister` / `resolve` / `subscribe`
+* 三种实现：Nacos（官方 SDK）、Eureka（自实现 REST 客户端，无第三方依赖）、etcd（key-value + 租约）
+* 自动心跳 / 续约：Eureka 定时续约，etcd 挂租约自动续期，过期即被摘除
+* 变更订阅：`subscribe(serviceName, listener)` 返回取消订阅函数
+* 纯 ESM，无框架绑定
+
+== 安装
+
+[source,bash]
+----
+npm i @flovven/discovery
+----
+
+Nacos 实现依赖 `nacos-naming`，etcd 实现依赖 `etcd3`，Eureka 实现只依赖全局 `fetch`（Node 18+）。
+
+== 快速开始
+
+[source,ts]
+----
+import { NacosDiscovery } from '@flovven/discovery';
+
+const discovery = new NacosDiscovery({
+  serverAddr: '127.0.0.1:8848',
+  namespace: 'public',
+});
+
+await discovery.register({
+  serviceName: 'flovven-web',
+  ip: '10.0.0.11',
+  port: 8080,
+  weight: 1,
+  metadata: { version: '0.1.0' },
+});
+
+const instances = await discovery.resolve('flovven-web');
+// [{ serviceName: 'flovven-web', id: '10.0.0.11:8080', ip: '10.0.0.11', port: 8080,
+//    metadata: { version: '0.1.0' }, weight: 1, healthy: true }]
+
+const off = await discovery.subscribe('flovven-web', (list) => {
+  console.log('instances:', list.length);
+});
+
+await discovery.deregister({ serviceName: 'flovven-web', ip: '10.0.0.11', port: 8080 });
+off();
+----
+
+== 核心 API
+
+[options="header"]
+|===
+| 导出 | 说明
+
+| `ServiceInstance` | 注册入参：`serviceName`、`ip`、`port`、`id?`、`metadata?`、`weight?`、`ephemeral?`
+| `ResolvedInstance` | 查询结果：`serviceName`、`id`、`ip`、`port`、`metadata`、`weight`、`healthy`
+| `ServiceDiscovery` | 接口：`name`、`register`、`deregister`、`resolve`、可选 `subscribe`
+|===
+
+`id` 缺省时各实现统一按 `ip:port` 生成。
+
+== 内置实现
+
+[options="header"]
+|===
+| 类 | 选项 | 底层与行为
+
+| `NacosDiscovery` | `serverAddr`、`namespace?` | 基于 `nacos-naming`：`registerInstance` / `deregisterInstance` / `getAllInstances`，`subscribe` 走 `subscribe` + `unSubscribe`
+| `EurekaDiscovery` | `serverUrl`、`heartbeatMs?`（默认 30000）、`pollMs?`（默认 15000） | 自实现 REST 客户端：`PUT /apps/{APP}` 注册、`PUT /apps/{APP}/{id}` 心跳续约、`DELETE /apps/{APP}/{id}` 注销、`GET /apps/{APP}` 查询；`subscribe` 为间隔轮询，实例列表变化才回调
+| `EtcdDiscovery` | `hosts`、`prefix?`（默认 `/flovven/discovery`）、`ttlSeconds?`（默认 30） | 键结构 `{prefix}/{serviceName}/{instanceId}`，值为实例 JSON；注册时挂租约自动续期，`subscribe` 监听前缀的 `put` / `delete` 后重新拉取
+|===
+
+`resolve` 返回结果只做数据结构归一化，是否会过滤不健康实例由各实现决定
+（Eureka 以 `status === 'UP'` 标记 `healthy`，Nacos 取实例自身 `healthy` 字段）。
+
+== 与 web-client 配合
+
+`@flovven/web-client` 的 `discoverer` 选项接受任意实现或 `{ resolve(name) }` 鸭子类型对象，
+因此可直接把本包实例传入，客户端据此做服务名解析与负载均衡：
+
+[source,ts]
+----
+import { createClient } from '@flovven/web-client';
+import { EtcdDiscovery } from '@flovven/discovery';
+
+const discovery = new EtcdDiscovery({ hosts: 'http://127.0.0.1:2379' });
+
+const svc = createClient({
+  serviceName: 'user-service',
+  discoverer: discovery,
+  mappings: { get: 'GET /api/users/{id}' },
+});
+----
+
+== 构建与检查
+
+[source,bash]
+----
+npm run build      # tsc -p tsconfig.json，产物输出到 dist/
+npm run typecheck  # tsc -p tsconfig.json --noEmit
+----
+
+本包 package.json 当前未声明 `test` 脚本，测试以构建 + 类型检查为准。
+
+== 许可证
+
+待补充（License TBD）。

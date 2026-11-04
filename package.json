@@ -1,0 +1,30 @@
+{
+  "name": "@flovven/discovery",
+  "version": "0.1.0",
+  "description": "flovven 服务发现组件：服务注册 / 续约 / 发现（Nacos 实现）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "etcd3": "^1.1.0",
+    "nacos-naming": "^2.6.3"
+  },
+  "devDependencies": {
+    "@types/long": "^4.0.2",
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  }
+}

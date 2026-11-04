@@ -1,0 +1,32 @@
+﻿# 依赖
+node_modules/
+
+# 构建产物
+dist/
+build/
+lib/
+out/
+coverage/
+*.tgz
+*.tsbuildinfo
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 环境与密钥
+.env
+.env.*
+
+# 本地临时调试产物
+temp/
+temp_*.txt
