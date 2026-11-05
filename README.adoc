@@ -81,6 +81,92 @@ off();
 `resolve` 返回结果只做数据结构归一化，是否会过滤不健康实例由各实现决定
 （Eureka 以 `status === 'UP'` 标记 `healthy`，Nacos 取实例自身 `healthy` 字段）。
 
+== 配置驱动的自动注册（autoreg）
+
+`src/autoreg.ts` 对标 `bufgot/discovery/autoreg` 的 `BootstrapAutoReg`，
+把「读配置 → 批量建连 → 注册本机实例 → 起心跳 → 按依赖发现 → 配置变更动态增删」
+收敛为一个入口函数，业务侧无需自己 new 各种 provider。
+
+=== 配置结构
+
+[source,yaml]
+----
+discovery:
+  instance:                       # 本机实例身份
+    service_name: order-service   # 必填
+    ip: 10.0.0.5                  # 必填
+    port: 9000
+    instance_id: 10.0.0.5:9000    # 可选，缺省 ip:port
+    metadata: { version: 0.1.0 }
+  registries:                     # 段键名即注册中心别名，type 缺省按键名推断
+    etcd:
+      endpoints: ["http://127.0.0.1:2379"]
+      prefix: /flovven/discovery  # 可选
+      heartbeat_ms: 30000         # 心跳/租约节奏，<=0 关闭框架层心跳
+    nacos:
+      server_addr: 127.0.0.1:8848
+      namespace: public
+    eureka:
+      server_url: http://127.0.0.1:8761/eureka
+      enabled: true               # false 等同移除
+  dependencies: [user-service, pay-service]
+----
+
+配置字段同时接受 camelCase（`serverUrl` / `serverAddr` / `heartbeatMs`）与 bufgot 风格的
+snake_case（`server_url` / `server_addr` / `heartbeat_interval`）。
+`registries` 中支持任意多个段，类型不限于三个内置实现——通过 `factory` 注入自定义 provider 即可。
+
+=== 使用
+
+[source,ts]
+----
+import { bootstrapAutoReg } from '@flovven/discovery';
+
+// config 可为对象、discovery 段本身，或返回配置的同步/异步函数（配置中心推送后重读）
+const app = await bootstrapAutoReg({
+  config: () => config.snapshot(),   // 读取完整配置对象（含 discovery 段）
+  configKey: 'discovery',            // 缺省即 discovery
+  onFailure: (f) => console.warn(f.registry, f.phase, f.message),
+});
+
+app.status();
+// { instance, revision, registries: [{ name, type, enabled, registered, heartbeats }],
+//   dependencies: [{ serviceName, instances, error }], failures: [] }
+
+// 配置中心推送变更后对账：新增即注册、移除即注销、改动先注销再重建
+const report = await app.reload();
+// { revision, added, removed, kept, dependencies, failures, ok }
+
+// 跨注册中心发现（按 id 去重合并，单源失败跳过）
+const instances = await app.discover('user-service');
+
+// 优雅下线：全部注销 + 停心跳 + 关连接
+await app.close();
+----
+
+=== 行为约定
+
+[options="header"]
+|===
+| 场景 | 行为
+
+| 新增注册中心段 | 建连 → `register` → 按 `heartbeat_ms`（缺省 30000）起续约定时器
+| 移除段 / `enabled: false` | 先 `deregister` 再 `close`，同时清掉续约定时器
+| 段配置变更 | 按旧配置注销并关闭，再按新配置重建（`reload()` 报告中同时计入 removed 与 added）
+| 单源失败 | 记录到 `failures`（`phase` 为 `config` / `connect` / `register` / `deregister` / `renew` / `discover`），其余注册中心照常工作，入口函数不抛出
+| 心跳续约 | 优先调用 provider 的 `renew()`；无该能力时退化为再次 `register()`
+| `dependencies` | bootstrap 后自动执行一次发现，结果缓存在 `status().dependencies`，可再次 `discoverDependencies()` 刷新
+|===
+
+=== 扩展点
+
+* `factory(ctx) => provider`：`ctx` 含 `name` / `type` / `config` / `instance` / `heartbeatMs`；
+  返回对象除标准 `ServiceDiscovery` 外可选实现 `renew()`、`close()`。测试用它注入 mock，业务侧可接入自研注册中心。
+* `createDiscoveryProvider`：缺省工厂，按 `type` 创建 `EtcdDiscovery` / `EurekaDiscovery` / `NacosDiscovery`。
+* `onFailure` / `logger`：错误聚合的消费端；`allFailures()` / `clearFailures()` 可整体读取与重置。
+* 辅助函数：`extractConfigSection`（取段）、`resolveRegistryType`（类型推断）、
+  `isRegistryEnabled`（连接条件判断）、`resolveHeartbeatMs`（心跳间隔解析）。
+
 == 与 web-client 配合
 
 `@flovven/web-client` 的 `discoverer` 选项接受任意实现或 `{ resolve(name) }` 鸭子类型对象，
@@ -106,9 +192,8 @@ const svc = createClient({
 ----
 npm run build      # tsc -p tsconfig.json，产物输出到 dist/
 npm run typecheck  # tsc -p tsconfig.json --noEmit
+npm test           # build 后跑 node --test "test/*.test.mjs"（autoreg 全用例，含 mock provider）
 ----
-
-本包 package.json 当前未声明 `test` 脚本，测试以构建 + 类型检查为准。
 
 == 许可证
 
